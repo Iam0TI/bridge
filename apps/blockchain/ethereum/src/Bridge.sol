@@ -21,41 +21,40 @@ error CollectionMappingError();
 error NotWhiteListedError();
 error BridgeNotEnabledError();
 error TooManyTokensError();
+error MinimumGasFeeError();
+error NotbridgeInitalerError();
 
 uint256 constant MAX_PAYLOAD_LENGTH = 300;
-
+uint256 constant MIN_GAS_FEE = 5e13; // 0.00005 ETH
 /**
    @title Starklane bridge contract.
 */
-contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, StarklaneEscrow, StarklaneMessaging, CollectionManager {
-
+contract Starklane is
+    IStarklaneEvent,
+    UUPSOwnableProxied,
+    StarklaneState,
+    StarklaneEscrow,
+    StarklaneMessaging,
+    CollectionManager
+{
     // Mapping (collectionAddress => bool)
     mapping(address => bool) _whiteList;
     address[] _collections;
     bool _enabled;
     bool _whiteListEnabled;
 
-
     /**
        @notice Initializes the implementation, only callable once.
 
        @param data Data to init the implementation.
     */
-    function initialize(
-        bytes calldata data
-    )
-        public
-        onlyInit
-    {
+    function initialize(bytes calldata data) public onlyInit {
         (
             address owner,
             IStarknetMessaging starknetCoreAddress,
             uint256 starklaneL2Address,
             uint256 starklaneL2Selector
-        ) = abi.decode(
-            data,
-            (address, IStarknetMessaging, uint256, uint256)
-        );
+        ) = abi.decode(data, (address, IStarknetMessaging, uint256, uint256));
         _enabled = false;
         _starknetCoreAddress = starknetCoreAddress;
 
@@ -81,10 +80,10 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         snaddress ownerL2,
         uint256[] calldata ids,
         bool useAutoBurn
-    )
-        external
-        payable
-    {
+    ) external payable {
+        if (msg.value < MIN_GAS_FEE) {
+            revert MinimumGasFeeError();
+        }
         if (!Cairo.isFelt252(snaddress.unwrap(ownerL2))) {
             revert CairoWrapError();
         }
@@ -118,10 +117,8 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         req.ownerL2 = ownerL2;
 
         if (ctype == CollectionType.ERC721) {
-            (req.name, req.symbol, req.uri, req.tokenURIs) = TokenUtil.erc721Metadata(
-                collectionL1,
-                ids
-            );
+            (req.name, req.symbol, req.uri, req.tokenURIs) = TokenUtil
+                .erc721Metadata(collectionL1, ids);
         } else {
             (req.uri) = TokenUtil.erc1155Metadata(collectionL1);
         }
@@ -134,7 +131,9 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         if (payload.length >= MAX_PAYLOAD_LENGTH) {
             revert TooManyTokensError();
         }
-        IStarknetMessaging(_starknetCoreAddress).sendMessageToL2{value: msg.value}(
+        IStarknetMessaging(_starknetCoreAddress).sendMessageToL2{
+            value: msg.value
+        }(
             snaddress.unwrap(_starklaneL2Address),
             felt252.unwrap(_starklaneL2Selector),
             payload
@@ -152,11 +151,7 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
     */
     function withdrawTokens(
         uint256[] calldata request
-    )
-        external
-        payable
-        returns (address)
-    {
+    ) external payable returns (address) {
         if (!_enabled) {
             revert BridgeNotEnabledError();
         }
@@ -171,12 +166,19 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
             // _consumeMessageAutoWithdraw(_starklaneL2Address, request);
             revert NotSupportedYetError();
         } else {
-            _consumeMessageStarknet(_starknetCoreAddress, _starklaneL2Address, request);
+            _consumeMessageStarknet(
+                _starknetCoreAddress,
+                _starklaneL2Address,
+                request
+            );
         }
 
         Request memory req = Protocol.requestDeserialize(request, 0);
 
-        address collectionL1 = _verifyRequestAddresses(req.collectionL1, req.collectionL2);
+        address collectionL1 = _verifyRequestAddresses(
+            req.collectionL1,
+            req.collectionL2
+        );
 
         CollectionType ctype = Protocol.collectionTypeFromHeader(header);
 
@@ -198,7 +200,12 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         for (uint256 i = 0; i < req.tokenIds.length; i++) {
             uint256 id = req.tokenIds[i];
 
-            bool wasEscrowed = _withdrawFromEscrow(ctype, collectionL1, req.ownerL1, id);
+            bool wasEscrowed = _withdrawFromEscrow(
+                ctype,
+                collectionL1,
+                req.ownerL1,
+                id
+            );
 
             if (!wasEscrowed) {
                 // TODO: perhaps, implement the same interface for ERC721 and ERC1155
@@ -214,6 +221,15 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         return collectionL1;
     }
 
+    // The steps in this flow are as follows:
+
+    //     The user that initiated the L1→L2 message calls the startL1ToL2MessageCancellation function in the Starknet Core Contract.
+
+    //     The user waits five days until she can finalize the cancellation.
+
+    //     The user calls the cancelL1ToL2Message function.
+    // check here to read more  https://docs.starknet.io/architecture-and-concepts/network-architecture/messaging-mechanism/#l2-l1_message_cancellation
+
     /**
         @notice Start the cancellation of a given request.
      
@@ -223,14 +239,18 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
     function startRequestCancellation(
         uint256[] memory payload,
         uint256 nonce
-    ) external onlyOwner {
+    ) external {
+        Request memory req = Protocol.requestDeserialize(payload, 0);
+        if (msg.sender != req.ownerL1) {
+            revert NotbridgeInitaler();
+        }
         IStarknetMessaging(_starknetCoreAddress).startL1ToL2MessageCancellation(
-            snaddress.unwrap(_starklaneL2Address), 
-            felt252.unwrap(_starklaneL2Selector), 
+            snaddress.unwrap(_starklaneL2Address),
+            felt252.unwrap(_starklaneL2Selector),
             payload,
             nonce
         );
-        Request memory req = Protocol.requestDeserialize(payload, 0);
+
         emit CancelRequestStarted(req.hash, block.timestamp);
     }
 
@@ -240,17 +260,18 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         @param payload Request to cancel
         @param nonce Nonce used for request sending.
      */
-    function cancelRequest(
-        uint256[] memory payload,
-        uint256 nonce
-    ) external {
+    function cancelRequest(uint256[] memory payload, uint256 nonce) external {
+        Request memory req = Protocol.requestDeserialize(payload, 0);
+        if (msg.sender != req.ownerL1) {
+            revert NotbridgeInitalerError();
+        }
         IStarknetMessaging(_starknetCoreAddress).cancelL1ToL2Message(
-            snaddress.unwrap(_starklaneL2Address), 
-            felt252.unwrap(_starklaneL2Selector), 
+            snaddress.unwrap(_starklaneL2Address),
+            felt252.unwrap(_starklaneL2Selector),
             payload,
             nonce
         );
-        Request memory req = Protocol.requestDeserialize(payload, 0);
+
         _cancelRequest(req);
         emit CancelRequestCompleted(req.hash, block.timestamp);
     }
@@ -285,8 +306,7 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         _whiteListCollection(collection, enable);
         emit CollectionWhiteListUpdated(collection, enable);
     }
-    
-    
+
     /**
         @notice Check if white list is globally enabled
 
@@ -305,18 +325,22 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
     function isWhiteListed(address collection) external view returns (bool) {
         return _isWhiteListed(collection);
     }
-    
+
     /**
         @notice Get list of white listed collections
 
         @return array of white listed collections
      */
-    function getWhiteListedCollections() external view returns (address[] memory) {
+    function getWhiteListedCollections()
+        external
+        view
+        returns (address[] memory)
+    {
         uint256 offset = 0;
         uint256 nbElem = _collections.length;
         // solidity doesn't support dynamic length array in memory
         address[] memory ret = new address[](nbElem);
-        for (uint256 i = 0; i < nbElem ;++i) {
+        for (uint256 i = 0; i < nbElem; ++i) {
             address cur = _collections[i];
             if (_whiteList[cur]) {
                 ret[offset] = cur;
@@ -327,13 +351,11 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         assembly {
             mstore(ret, offset)
         }
-        
+
         return ret;
     }
 
-    function _isWhiteListed(
-        address collection
-    ) internal view returns (bool) {
+    function _isWhiteListed(address collection) internal view returns (bool) {
         return !_whiteListEnabled || _whiteList[collection];
     }
 
@@ -341,7 +363,7 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         if (enable && !_whiteList[collection]) {
             bool toAdd = true;
             uint256 i = 0;
-            while(i < _collections.length) {
+            while (i < _collections.length) {
                 if (collection == _collections[i]) {
                     toAdd = false;
                     break;
@@ -355,13 +377,11 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         _whiteList[collection] = enable;
     }
 
-    function enableBridge(
-        bool enable
-    ) external onlyOwner {
+    function enableBridge(bool enable) external onlyOwner {
         _enabled = enable;
     }
 
-    function isEnabled() external view returns(bool) {
+    function isEnabled() external view returns (bool) {
         return _enabled;
     }
 
@@ -371,7 +391,9 @@ contract Starklane is IStarklaneEvent, UUPSOwnableProxied, StarklaneState, Stark
         bool force
     ) external onlyOwner {
         _setL1L2AddressMapping(collectionL1, collectionL2, force);
-        emit L1L2CollectionMappingUpdated(collectionL1, snaddress.unwrap(collectionL2));
+        emit L1L2CollectionMappingUpdated(
+            collectionL1,
+            snaddress.unwrap(collectionL2)
+        );
     }
-
 }

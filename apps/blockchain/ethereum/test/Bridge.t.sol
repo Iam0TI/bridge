@@ -23,7 +23,6 @@ import "./token/IERC721MintRangeFree.sol";
    @title Bridge testing.
 */
 contract BridgeTest is Test, IStarklaneEvent {
-
     address bridge;
     address erc721C1;
     address erc1155C1;
@@ -45,15 +44,10 @@ contract BridgeTest is Test, IStarklaneEvent {
         snCore = address(new StarknetMessagingLocal());
 
         address impl = address(new Starklane());
-        
+
         bytes memory dataInit = abi.encodeWithSelector(
             Starklane.initialize.selector,
-            abi.encode(
-                address(this),
-                snCore,
-                0x1,
-                0x2
-            )
+            abi.encode(address(this), snCore, 0x1, 0x2)
         );
 
         bridge = address(new ERC1967Proxy(impl, dataInit));
@@ -139,7 +133,7 @@ contract BridgeTest is Test, IStarklaneEvent {
 
         vm.startPrank(alice);
         IERC721(erc721C1).setApprovalForAll(address(bridge), true);
-        IStarklane(bridge).depositTokens{value: 30000}(
+        IStarklane(bridge).depositTokens{value: 0.0001 ether}(
             salt,
             address(erc721C1),
             to,
@@ -149,6 +143,28 @@ contract BridgeTest is Test, IStarklaneEvent {
         vm.stopPrank();
 
         // TODO: test event emission to verify the request.
+    }
+    function test_depositTokenERC721() public {
+        IERC721MintRangeFree(erc721C1).mintRangeFree(alice, 0, 10);
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = 0;
+        ids[1] = 9;
+
+        uint256 salt = 0x1;
+        snaddress to = Cairo.snaddressWrap(0x1);
+
+        vm.startPrank(alice);
+        IERC721(erc721C1).setApprovalForAll(address(bridge), true);
+        vm.expectRevert(MinimumGasFeeError.selector);
+        IStarklane(bridge).depositTokens{value: 0.00001 ether}(
+            salt,
+            address(erc721C1),
+            to,
+            ids,
+            false
+        );
+        vm.stopPrank();
     }
 
     function test_depositTokenERC721_notEnabled() public {
@@ -190,7 +206,7 @@ contract BridgeTest is Test, IStarklaneEvent {
 
         vm.startPrank(alice);
         IERC721(erc721C1).setApprovalForAll(address(bridge), true);
-        
+
         vm.expectRevert(NotWhiteListedError.selector);
         IStarklane(bridge).depositTokens{value: 30000}(
             salt,
@@ -218,7 +234,7 @@ contract BridgeTest is Test, IStarklaneEvent {
 
         vm.startPrank(alice);
         IERC721(erc721C1).setApprovalForAll(address(bridge), true);
-        
+
         IStarklane(bridge).depositTokens{value: 30000}(
             salt,
             address(erc721C1),
@@ -246,7 +262,6 @@ contract BridgeTest is Test, IStarklaneEvent {
         vm.expectEmit(bridge);
         emit CollectionWhiteListUpdated(erc721C1, false);
         IStarklane(bridge).whiteList(erc721C1, false);
-
     }
 
     function test_isWhiteListEnabled() public {
@@ -258,13 +273,14 @@ contract BridgeTest is Test, IStarklaneEvent {
 
         IStarklane(bridge).whiteList(erc721C1, true);
         assert(IStarklane(bridge).isWhiteListed(erc721C1));
-        
+
         IStarklane(bridge).whiteList(erc721C1, false);
         assert(!IStarklane(bridge).isWhiteListed(erc721C1));
     }
 
     function test_getWhiteListedCollections() public {
-        address[] memory whiteListed = IStarklane(bridge).getWhiteListedCollections();
+        address[] memory whiteListed = IStarklane(bridge)
+            .getWhiteListedCollections();
         assertEq(whiteListed.length, 0);
 
         IStarklane(bridge).whiteList(erc721C1, true);
@@ -281,7 +297,11 @@ contract BridgeTest is Test, IStarklaneEvent {
     // [C-01] Anyone can withdraw any token held by the L1 bridge
     function test_withdrawTokensERC721AutoWithdrawDeploy() public {
         // Build the request and compute it's "would be" message hash.
-        felt252 header = Protocol.requestHeaderV1(CollectionType.ERC721, false, true);
+        felt252 header = Protocol.requestHeaderV1(
+            CollectionType.ERC721,
+            false,
+            true
+        );
         Request memory req = buildRequestDeploy(header, 888, bob);
         uint256[] memory reqSerialized = Protocol.requestSerialize(req);
         bytes32 msgHash = computeMessageHashFromL2(reqSerialized);
@@ -297,7 +317,11 @@ contract BridgeTest is Test, IStarklaneEvent {
     // Test a withdraw STARKNET that will trigger the deploy of a new collection on L1.'0x800000000000011000000000000000000000000000000000000000000000001'
     function test_withdrawTokensERC721StarknetWithdrawDeploy() public {
         // Build the request and compute it's "would be" message hash.
-        felt252 header = Protocol.requestHeaderV1(CollectionType.ERC721, false, false);
+        felt252 header = Protocol.requestHeaderV1(
+            CollectionType.ERC721,
+            false,
+            false
+        );
         Request memory req = buildRequestDeploy(header, 888, bob);
         uint256[] memory reqSerialized = Protocol.requestSerialize(req);
         bytes32 msgHash = computeMessageHashFromL2(reqSerialized);
@@ -320,9 +344,15 @@ contract BridgeTest is Test, IStarklaneEvent {
 
     // Audit:
     // [C-02] Impossible to withdraw L1 native tokens back on L1 after bridging to L2. Also, a different collection address will be generated for every native l2 token bridged to l1
-    function test_withdrawTokensERC721StarknetWithdrawDeploySameCollection() public {
+    function test_withdrawTokensERC721StarknetWithdrawDeploySameCollection()
+        public
+    {
         // Build the request and compute it's "would be" message hash.
-        felt252 header = Protocol.requestHeaderV1(CollectionType.ERC721, false, false);
+        felt252 header = Protocol.requestHeaderV1(
+            CollectionType.ERC721,
+            false,
+            false
+        );
         Request memory req = buildRequestDeploy(header, 888, bob);
         uint256[] memory reqSerialized = Protocol.requestSerialize(req);
         bytes32 msgHash = computeMessageHashFromL2(reqSerialized);
@@ -351,8 +381,14 @@ contract BridgeTest is Test, IStarklaneEvent {
         assertEq(collection1, collection2);
     }
 
-    function test_withdrawTokensERC721StarknetWithdrawDeployDifferentCollection() public {
-        felt252 header = Protocol.requestHeaderV1(CollectionType.ERC721, false, false);
+    function test_withdrawTokensERC721StarknetWithdrawDeployDifferentCollection()
+        public
+    {
+        felt252 header = Protocol.requestHeaderV1(
+            CollectionType.ERC721,
+            false,
+            false
+        );
         Request memory req = buildRequestDeploy(header, 888, bob);
         uint256[] memory reqSerialized = Protocol.requestSerialize(req);
         bytes32 msgHash = computeMessageHashFromL2(reqSerialized);
@@ -382,9 +418,15 @@ contract BridgeTest is Test, IStarklaneEvent {
         assertFalse(collection1 == collection2);
     }
 
-    function test_withdrawTokens_deployedCollection_shall_be_whitelisted() public {
+    function test_withdrawTokens_deployedCollection_shall_be_whitelisted()
+        public
+    {
         // Build the request and compute it's "would be" message hash.
-        felt252 header = Protocol.requestHeaderV1(CollectionType.ERC721, false, false);
+        felt252 header = Protocol.requestHeaderV1(
+            CollectionType.ERC721,
+            false,
+            false
+        );
         Request memory req = buildRequestDeploy(header, 888, bob);
         uint256[] memory reqSerialized = Protocol.requestSerialize(req);
         bytes32 msgHash = computeMessageHashFromL2(reqSerialized);
@@ -402,13 +444,21 @@ contract BridgeTest is Test, IStarklaneEvent {
 
     function test_depositWithdrawTokens_withMapping() public {
         // add mapping L1 <-> L2: erc721C1 <-> 0x123
-        IStarklane(bridge).setL1L2CollectionMapping(address(erc721C1), Cairo.snaddressWrap(0x123), true);
+        IStarklane(bridge).setL1L2CollectionMapping(
+            address(erc721C1),
+            Cairo.snaddressWrap(0x123),
+            true
+        );
 
         // alice deposit token 0 and 9 of collection erc721C1 to bridge
         test_depositTokenERC721();
 
         // Build the request and compute it's "would be" message hash.
-        felt252 header = Protocol.requestHeaderV1(CollectionType.ERC721, false, false);
+        felt252 header = Protocol.requestHeaderV1(
+            CollectionType.ERC721,
+            false,
+            false
+        );
         Request memory req = buildRequestDeploy(header, 9, bob);
         req.collectionL1 = address(erc721C1);
         uint256[] memory reqSerialized = Protocol.requestSerialize(req);
@@ -443,7 +493,10 @@ contract BridgeTest is Test, IStarklaneEvent {
         ids[0] = 0;
         ids[1] = 9;
 
-        (uint256 nonce, uint256[] memory payload) = setupCancelRequest(alice, ids);
+        (uint256 nonce, uint256[] memory payload) = setupCancelRequest(
+            alice,
+            ids
+        );
         assert(IERC721(erc721C1).ownerOf(ids[0]) != alice);
         assert(IERC721(erc721C1).ownerOf(ids[0]) != alice);
 
@@ -461,23 +514,25 @@ contract BridgeTest is Test, IStarklaneEvent {
         assert(IERC721(erc721C1).ownerOf(ids[1]) == alice);
     }
 
-    function test_startRequestCancellation_onlyAdmin() public {
+    function test_startRequestCancellation() public {
         uint256[] memory ids = new uint256[](2);
         ids[0] = 0;
         ids[1] = 9;
 
-        (uint256 nonce, uint256[] memory payload) = setupCancelRequest(alice, ids);
+        (uint256 nonce, uint256[] memory payload) = setupCancelRequest(
+            alice,
+            ids
+        );
         assert(IERC721(erc721C1).ownerOf(ids[0]) == bridge);
         assert(IERC721(erc721C1).ownerOf(ids[1]) == bridge);
 
-
         vm.startPrank(alice);
-        vm.expectRevert();
-        IStarklane(bridge).startRequestCancellation(payload, nonce);
-        vm.stopPrank();
 
-        vm.expectRevert();
+        IStarklane(bridge).startRequestCancellation(payload, nonce);
+
+        vm.warp(block.timestamp + 5 days);
         IStarklane(bridge).cancelRequest(payload, nonce);
+        vm.stopPrank();
 
         assert(IERC721(erc721C1).ownerOf(ids[0]) == bridge);
         assert(IERC721(erc721C1).ownerOf(ids[1]) == bridge);
@@ -490,7 +545,10 @@ contract BridgeTest is Test, IStarklaneEvent {
         ids[0] = 0;
         ids[1] = 9;
 
-        (uint256 nonce, uint256[] memory payload) = setupCancelRequest(alice, ids);
+        (uint256 nonce, uint256[] memory payload) = setupCancelRequest(
+            alice,
+            ids
+        );
         assert(IERC721(erc721C1).ownerOf(ids[0]) != alice);
         assert(IERC721(erc721C1).ownerOf(ids[0]) != alice);
 
@@ -510,21 +568,16 @@ contract BridgeTest is Test, IStarklaneEvent {
         assert(IERC721(erc721C1).ownerOf(ids[1]) == alice);
     }
 
-
     // Build a request that should trigger a deploy of a new collection on L1.
     function buildRequestDeploy(
         felt252 header,
         uint256 id,
         address newOwner
-    )
-        public
-        pure
-        returns (Request memory)
-    {
+    ) public pure returns (Request memory) {
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
 
-        Request memory req = Request ({
+        Request memory req = Request({
             header: header,
             hash: 0x1,
             collectionL1: address(0x0),
@@ -538,7 +591,7 @@ contract BridgeTest is Test, IStarklaneEvent {
             tokenValues: new uint256[](0),
             tokenURIs: new string[](0),
             newOwners: new uint256[](0)
-            });
+        });
 
         return req;
     }
@@ -546,12 +599,11 @@ contract BridgeTest is Test, IStarklaneEvent {
     //
     function computeMessageHashFromL2(
         uint256[] memory request
-    )
-        public
-        returns (bytes32)
-    {
-        (snaddress starklaneL2Address, felt252 starklaneL2Selector)
-            = IStarklane(bridge).l2Info();
+    ) public returns (bytes32) {
+        (
+            snaddress starklaneL2Address,
+            felt252 starklaneL2Selector
+        ) = IStarklane(bridge).l2Info();
 
         // To remove warning. Is there a better way?
         assertTrue(felt252.unwrap(starklaneL2Selector) > 0);
@@ -561,7 +613,8 @@ contract BridgeTest is Test, IStarklaneEvent {
                 snaddress.unwrap(starklaneL2Address),
                 uint256(uint160(bridge)),
                 request.length,
-                request)
+                request
+            )
         );
 
         return msgHash;
@@ -570,10 +623,8 @@ contract BridgeTest is Test, IStarklaneEvent {
     function setupCancelRequest(
         address user,
         uint256[] memory tokenIds
-    ) internal returns(uint256, uint256[] memory) {
-
+    ) internal returns (uint256, uint256[] memory) {
         IERC721MintRangeFree(erc721C1).mintRangeFree(user, 0, 10);
-
 
         uint256 salt = 0x1;
         snaddress to = Cairo.snaddressWrap(0x1);
@@ -595,10 +646,15 @@ contract BridgeTest is Test, IStarklaneEvent {
         assertEq(entries.length, 4);
         Vm.Log memory logMessageToL2 = entries[2];
         Vm.Log memory depositRequestEvent = entries[3];
-        (uint256[] memory payload, uint256 nonce, ) = abi.decode(logMessageToL2.data, (uint256[], uint256, uint256));
-        ( ,uint256[] memory reqContent) = abi.decode(depositRequestEvent.data, (uint256, uint256[]));
+        (uint256[] memory payload, uint256 nonce, ) = abi.decode(
+            logMessageToL2.data,
+            (uint256[], uint256, uint256)
+        );
+        (, uint256[] memory reqContent) = abi.decode(
+            depositRequestEvent.data,
+            (uint256, uint256[])
+        );
         assert(payload.length == reqContent.length);
         return (nonce, payload);
     }
-
 }
